@@ -187,7 +187,7 @@ O parâmetro escolhido foi 2, por meio do qual a _AUROC_ da validação é maxim
 
 Em razão da complexidade do algoritmo, a intepretação do modelo não é tão direta quanto a de árvores de decisão individuais. Contudo, é possível visualizar a importância das variáveis preditoras na classificação:
 
-```{r imp, eval = FALSE}
+```{r imp, eval = TRUE}
 rf_importance <- varImp(rf_model, scale = FALSE)
 ggplot(rf_importance)
 ```

@@ -1,0 +1,218 @@
+---
+title: 'Análise: German Credit Risk Data'
+author: "Luís Assunção"
+date: "22 de outubro de 2018"
+output: html_document
+runtime: shiny
+---
+
+<style> body {text-align: justify} </style>
+
+# Descrição e apresentação dos dados
+
+```{r libs, echo = FALSE, message = FALSE, results = "hide"}
+library(caret)
+library(data.table)
+library(e1071)
+library(ggcorrplot)
+library(ggplot2)
+library(kableExtra)
+library(knitr)
+library(pROC)
+library(randomForest)
+library(rattle)
+library(shiny)
+```
+
+```{r setup, echo = FALSE}
+opts_chunk$set(results = "hide")
+opts_chunk$set(echo = FALSE)
+opts_chunk$set(fig.align = "center")
+```
+
+```{r read}
+german_credit <- fread("german_credit.csv")
+```
+
+```{r clean}
+n <- dim(german_credit)[1]
+m <- dim(german_credit)[2]
+dim(german_credit[complete.cases(german_credit)])[1] == n
+sapply(german_credit, function(x) length(unique(x))) > 1
+```
+
+O banco de dados German Credit Risk Data tem 1000 observações de clientes que pegaram empréstimos de um banco, com 21 características[^1] para cada observação. Todas as observações são completas, ou seja, não há valores nulos entre os dados. Além disso, não há colunas constantes, o que significa que todas as características contêm alguma informação e, a princípio, não precisam ser removidas. Segue abaixo uma amostra do banco com cinco linhas e seis colunas:
+
+```{r sample, results = "markup"}
+set.seed(06061998)
+subsample <- german_credit[sample(1:n, 5), 1:6]
+kable(subsample) %>% kable_styling()
+```
+
+[^1]: O glossário fornecido indica que há colunas categóricas e numéricas entre os dados. _Creditability_, _Sex & Marital Status_, _Telephone_, _Foreign Worker_ e _Purpose_ são categóricas. _Duration of Credit (month)_, _Credit Amount_ e _Age (years)_ são numéricas. As demais características são números que representam 1) categorias ordinais, como _Payment of Previous Credit_ (que atribui uma nota proporcional à desejabilidade do status dos pagamentos anteriores) e _Most valuable available asset_ (que atribui uma nota proporcional ao valor financeiro da posse mais valiosa) e 2) intervalos de valores contínuos, como _Account Balance_, que atribui uma nota de acordo com a dimensão da conta do cliente. Essas variáveis podem ser tratadas tanto como categóricas quanto como numéricas. Os dois formatos foram testados e a melhor solução para o modelo final foi utilizá-las numericamente.
+
+```{r factors}
+int_to_factor <- c("Creditability", "Sex & Marital Status", "Telephone", "Foreign Worker", "Purpose")
+german_credit[, (int_to_factor) := lapply(.SD, as.factor), .SDcols = int_to_factor]
+```
+
+A primeira coluna, _Creditability_, indica se o cliente é um bom (1) ou mau (0) pagador de empréstimos. Essa é a variável resposta, ou seja, a característica que o credor deve prever ao decidir pela concessão ou não concessão de um empréstimo. O objetivo da análise, então, é descobrir a relação entre as demais características, ou variáveis preditoras, que melhor determine a variável resposta. Essa relação é quantificada por um modelo preditivo.
+
+Um primeiro passo nesse sentido envolve calcular a correlação linear entre as variáveis do banco. Em outras palavras: a ideia é medir como duas características se relacionam. Um método de mensurar isso é por meio do coeficiente de correlação linear de Pearson, no qual 1 indica que uma variável aumenta conforme a outra aumenta; -1 indica que uma diminui conforme a outra aumenta e vice-versa; e 0 indica que não há correlação. Esse cálculo foi realizado entre todas as colunas, exceto _Sex & Marital Status_ e _Purpose_, que são variáveis categóricas não ordenáveis e com mais de duas classes.
+
+
+```{r cor}
+correlation_matrix <- cor(sapply(german_credit[, !(c("Sex & Marital Status", "Purpose")), with = FALSE], as.numeric))
+ggcorrplot(correlation_matrix,
+           type = "lower",
+           ggtheme = "theme_gray",
+           show.legend = TRUE,
+           legend.title = "",
+           title = "Correlação linear de Pearson",
+           tl.cex = 8)
+```
+
+_Account Balance_, por exemplo, parece positivamente correlacionado com a variável resposta. _Age_, por outro lado, não apresenta correlação linear significativa com a creditabilidade. Além disso, curiosamente, o valor da propriedade mais valiosa do cliente parece ser negativamente correlacionado à classe do pagador. Visualizar as proporções das classes relativas aos valores das preditoras pode gerar intuições mais específicas sobre as relações entre os dados:
+
+```{r results = "markup"}
+selectInput("feature", label = "Preditora:", choices = names(german_credit[, !(int_to_factor), with = FALSE]), selected = "Credit Amount")
+```
+
+```{r results = "markup"}
+renderPlot({
+  if (input$feature %in% c("Duration of Credit (month)", "Credit Amount", "Age (years)")) {
+    ggplot(german_credit, aes(x = get(input$feature), fill = `Creditability`)) + geom_density(alpha = 0.3)
+  } else {
+    ggplot(german_credit, aes(x = get(input$feature), fill = `Creditability`)) + geom_histogram(alpha = 1, aes(y = ..density..))
+  }
+})
+```
+
+Os histogramas e gráficos de barra favorecem algumas interpretações dos dados. Pelo menos metade das preditoras parece ter algum efeito na resposta. Contudo, algumas das observações mais notáveis são:
+
+* A proporção de maus pagadores é maior entre clientes com _Account Balance_ 1 e 2, enquanto a de bons pagadores é maior entre clientes com notas 3 e 4;
+* Quanto maior a duração do crédito em meses, maior a proporção de maus pagadores;
+* Quanto maior a quantidade de crédito, maior a proporção de maus pagadores.
+
+Algumas preditoras podem ser mais eficazes quando combinadas com outras, criando novas variáveis e extraindo informações mais sensíveis para o modelo. Nesse banco, duas relações foram estabelecidas: _Credit Amount / Duration of Credit (month)_, ou seja, quanto o cliente paga por mês e _Duration of Credit (month) / Age (years)_, que representa o tempo de pagamento relativo à idade do cliente.
+
+
+```{r engineering}
+german_credit[, `Credit Amount / Duration of Credit (month)` := `Credit Amount` / `Duration of Credit (month)`]
+german_credit[, `Duration of Credit (month) / Age (years)` := `Duration of Credit (month)` / `Age (years)`]
+```
+
+Um último ponto importante antes do início da modelagem é a análise da proporção das classes na variável resposta:
+
+```{r count, results = "markup"}
+positive <- sum(german_credit[, Creditability] == 1)
+ggplot(german_credit, aes(`Creditability`)) + geom_bar() + ggtitle("Contagem de Credibility") + xlab("Classe") + ylab("Contagem")
+```
+
+# Modelagem
+
+O gráfico de barras evidencia que as classes não são balanceadas: existem 700 bons pagadores e 300 maus pagadores. Isso significa que maximizar a acurácia estimada da predição pode não ser o objetivo ideal do modelo. Como a acurácia é a proporção de acertos relativa ao número de predições, maximizá-la pode fazer com que o modelo seja enviesado em favor da classe majoritária.
+
+Uma solução para esse problema é maximizar a _AUROC_ (_Area under Receiver Operating Characteristic_) estimada do modelo. Essa métrica é comumente utilizada em problemas de classificação de crédito[^2]. A resposta gerada pela maior parte dos modelos não é a classe em si, mas sim uma probabilidade da classe. Normalmente, quando a probabilidade da classe "bom pagador" excede 50%, classifica-se como bom pagador. Caso contrário, como mau pagador. Esse limiar de 50% pode ser redefinido de acordo com a necessidade do problema. Uma forma de medir o quão robusto é um modelo consiste em calcular as taxas de verdadeiros positivos (bons pagadores classificados como bons pagadores) e falsos positivos (maus pagadores classificados como bons pagadores) para vários limiares entre 0 e 100%, desenhar uma curva entre os pontos e medir a área sob a curva. Essa área é a _AUROC_ e ela pode ser interpretada como o poder preditivo do modelo independente do limiar.
+
+<center>
+![](./roc.png)
+</center>
+
+[^2]: https://www.kaggle.com/c/home-credit-default-risk#evaluation
+
+Para estimar a métrica em questão, o banco de dados foi dividido em três partes: treinamento (64% das observações), validação (16%) e teste (20%). Cada possível modelo relaciona os dados de uma maneira particular e pode ser adequado, por meio de sua configuração (parâmetros), para se adequar a diferentes problemas. Diferentes modelos com diversas configurações foram ajustados ao banco de treinamento e, em seguida, a _AUROC_ de cada um foi medida por meio da predição do banco de validação[^3]. A combinação de modelo e parâmetros com a maior área sob a curva na validação foi escolhida. Esse modelo foi, então, ajustado ao banco combinado de treinamento e validação. Por fim, a predição do banco de teste foi utilizada como um estimador da _AUROC_ do modelo. Esse processo é necessário porque, como as observações de teste não são utilizadas na escolha ou no ajuste do modelo, o banco de teste serve como uma simulação da categorização de futuros clientes. Naturalmente, o ajuste final será feito com o banco de dados inteiro.
+
+[^3]: De forma mais elaborada, esse processo aconteceu 4 vezes. Dos 80% que constituem treinamento + validação, foram criados 5 bancos de validação: um com os primeiros 16%, outro com os 16% seguintes, etc. Para cada banco de validação, os demais 64% serviram como treinamento. A _AUROC_ estimada é a média das áreas encontradas em cada validação. Esse processo é chamado de validação cruzada em _k partes_.
+
+```{r split}
+set.seed(06061998)
+shuffle <- sample(n)
+split <- 0.8 * n
+train_data <- german_credit[shuffle[1:split], ]
+test_data <- german_credit[-shuffle[1:split], ]
+train_y <- train_data[, Creditability]
+train_x <- train_data[, Creditability := NULL]
+test_y <- test_data[, Creditability]
+test_x <- test_data[, Creditability := NULL]
+levels(train_y) <- c("Mau", "Bom")
+levels(test_y) <- c("Mau", "Bom")
+```
+
+```{r cv}
+ctrl <- trainControl(
+  method = "repeatedcv",
+  number = 5,
+  repeats = 3,
+  verboseIter = TRUE,
+  savePredictions = "final",
+  classProbs = TRUE,
+  summaryFunction = twoClassSummary,
+  allowParallel = TRUE
+)
+```
+
+Entre os modelos testados, de regressão logística e _k-nearest-neighbors_ a redes neurais, a melhor _AUROC_ estimada foi obtida por meio do algoritmo _Random Forests_, que é fundamentado na ideia de árvores de decisão. Uma árvore de decisão define a melhor variável preditora para criar um ponto de corte que faça a melhor divisão possível entre as classes resposta. Dentro do recorte feito e dos recortes subsequentes, o algoritmo continua a realizar esse processo de corte até que seja satisfeito um critério de parada. O resultado final segue um formato como esse:
+
+```{r tree}
+tree_model <- train(
+  x = train_x,
+  y = train_y,
+  method = "rpart",
+  metric = "ROC",
+  trControl = ctrl,
+  tuneLength = 5
+)
+fancyRpartPlot(tree_model$finalModel, sub = "", type = 3)
+```
+
+O _Random Forests_ cria novas amostras a partir do banco de treino, selecionando observações aleatoriamente. As amostras têm um número limitado de colunas, que também são determinadas aleatoriamente. Uma árvore é criada para cada amostra e aplicada na classificação do banco de validação e, em seguida, a classificação mais comum de cada observação é escolhida como a resposta definitiva do modelo. O número de colunas escolhidas por amostra é o parâmetro do _Random Forests_.
+
+```{r rf}
+set.seed(06061998)
+rf_model <- train(
+x = train_x,
+y = train_y,
+method = "rf",
+ntree = 1000,
+metric = "ROC",
+importance = TRUE,
+trControl = ctrl,
+tuneLength = 5
+)
+ggplot(rf_model) + xlab("Parâmetro") + ylab("AUROC") + ggtitle("AUROC x Parâmetro")
+```
+
+O parâmetro escolhido foi 2, por meio do qual a _AUROC_ da validação é maximizada. A área tem um valor médio de 0.8034.
+
+Em razão da complexidade do algoritmo, a intepretação do modelo não é tão direta quanto a de árvores de decisão individuais. Contudo, é possível visualizar a importância das variáveis preditoras na classificação:
+
+```{r imp, eval = FALSE}
+rf_importance <- varImp(rf_model, scale = FALSE)
+ggplot(rf_importance)
+```
+
+A importância das features, de fato, sugere uma confirmação das leituras visuais dos dados. Além disso, é interessante notar como as características relacionadas têm importância considerável no modelo.
+
+```{r prob}
+rf_prob <- predict(rf_model, test_x, type = "prob")
+roc_curve <- roc(test_y, rf_prob[, 2])
+roc_curve$auc
+```
+
+A _AUROC_ estimada pela predição do conjunto teste é 0.8174. Essa área foi maior do que aquela estimada pela validação. Isso pode ser um bom sinal, indicando que o processo de validação foi conservador, ou uma simples consequência da pequena variabilidade da estimação. A comparação das predições (linhas) com os valores reais (colunas) resulta numa tabela de confusão:
+
+```{r conf, results = "markup"}
+rf_predicted <- predict(rf_model, test_x)
+confusion <- confusionMatrix(rf_predicted, test_y, positive = "Bom")
+kable(confusion$table) %>% kable_styling()
+```
+
+Algumas métricas obtidas por meio da tabela podem orientar a tomada de decisão:
+
+```{r metrics, results = "markup"}
+kable(confusion$overall) %>% kable_styling()
+kable(confusion$byClass) %>% kable_styling()
+```
+
+Onde TP = bons pagadores classificados como bons pagadores, TN = maus pagadores classificados como maus pagadores, FP = maus pagadores classificados como bons pagadores, FN = bons pagadores classificados como maus pagadores. Accuracy = (TP+TN)/(TP+FP+FN+TN), Precision = TP/(TP+FP), Recall = TP/(TP+FN), F1 = (2 x Recall x Precision)/(Recall + Precision). Essas métricas, aliadas a conhecimento sobre domínio e gerenciamento de risco, devem auxiliar a tomada de decisão dos bancos na concessão dos empréstimos.

@@ -72,7 +72,7 @@ ggcorrplot(correlation_matrix,
            tl.cex = 8)
 ```
 
-_Account Balance_, por exemplo, parece positivamente correlacionado com a variável resposta. _Age_, por outro lado, não apresenta correlação linear significativa com a creditabilidade. Além disso, curiosamente, o valor da propriedade mais valiosa do cliente parece ser negativamente correlacionado à classe do pagador. Visualizar as proporções das classes relativas aos valores das preditoras pode gerar intuições mais específicas sobre as relações entre os dados:
+_Account Balance_, por exemplo, parece positivamente correlacionado com a variável resposta. _Age_, por outro lado, não apresenta correlação linear significativa com a creditabilidade. Além disso, curiosamente, o valor da propriedade mais valiosa do cliente parece ser negativamente correlacionado à classe do pagador. Visualizar o impacto individual das preditoras em cada classe pode gerar intuições mais específicas sobre os dados:
 
 ```{r results = "markup"}
 selectInput("feature", label = "Preditora:", choices = names(german_credit[, !(int_to_factor), with = FALSE]), selected = "Credit Amount")
@@ -80,15 +80,11 @@ selectInput("feature", label = "Preditora:", choices = names(german_credit[, !(i
 
 ```{r results = "markup"}
 renderPlot({
-  if (input$feature %in% c("Duration of Credit (month)", "Credit Amount", "Age (years)")) {
-    ggplot(german_credit, aes(x = get(input$feature), fill = `Creditability`)) + geom_density(alpha = 0.3)
-  } else {
-    ggplot(german_credit, aes(x = get(input$feature), fill = `Creditability`)) + geom_histogram(alpha = 1, aes(y = ..density..))
-  }
+ggplot(german_credit, aes(x = get(input$feature), fill = `Creditability`)) + geom_density(alpha = 0.3) + xlab(input$feature) + ylab("Frequência relativa")
 })
 ```
 
-Os histogramas e gráficos de barra favorecem algumas interpretações dos dados. Pelo menos metade das preditoras parece ter algum efeito na resposta. Contudo, algumas das observações mais notáveis são:
+Pelo menos metade das preditoras parece ter algum efeito na resposta. Contudo, algumas das observações mais notáveis são:
 
 * A proporção de maus pagadores é maior entre clientes com _Account Balance_ 1 e 2, enquanto a de bons pagadores é maior entre clientes com notas 3 e 4;
 * Quanto maior a duração do crédito em meses, maior a proporção de maus pagadores;
@@ -102,7 +98,7 @@ german_credit[, `Credit Amount / Duration of Credit (month)` := `Credit Amount` 
 german_credit[, `Duration of Credit (month) / Age (years)` := `Duration of Credit (month)` / `Age (years)`]
 ```
 
-Um último ponto importante antes do início da modelagem é a análise da proporção das classes na variável resposta:
+Um último ponto importante antes do início da modelagem é a análise da contagem das classes na variável resposta:
 
 ```{r count, results = "markup"}
 positive <- sum(german_credit[, Creditability] == 1)
@@ -113,7 +109,7 @@ ggplot(german_credit, aes(`Creditability`)) + geom_bar() + ggtitle("Contagem de 
 
 O gráfico de barras evidencia que as classes não são balanceadas: existem 700 bons pagadores e 300 maus pagadores. Isso significa que maximizar a acurácia estimada da predição pode não ser o objetivo ideal do modelo. Como a acurácia é a proporção de acertos relativa ao número de predições, maximizá-la pode fazer com que o modelo seja enviesado em favor da classe majoritária.
 
-Uma solução para esse problema é maximizar a _AUROC_ (_Area under Receiver Operating Characteristic_) estimada do modelo. Essa métrica é comumente utilizada em problemas de classificação de crédito[^2]. A resposta gerada pela maior parte dos modelos não é a classe em si, mas sim uma probabilidade da classe. Normalmente, quando a probabilidade da classe "bom pagador" excede 50%, classifica-se como bom pagador. Caso contrário, como mau pagador. Esse limiar de 50% pode ser redefinido de acordo com a necessidade do problema. Uma forma de medir o quão robusto é um modelo consiste em calcular as taxas de verdadeiros positivos (bons pagadores classificados como bons pagadores) e falsos positivos (maus pagadores classificados como bons pagadores) para vários limiares entre 0 e 100%, desenhar uma curva entre os pontos e medir a área sob a curva. Essa área é a _AUROC_ e ela pode ser interpretada como o poder preditivo do modelo independente do limiar.
+Uma solução para esse problema é maximizar a _AUROC_ (_Area under Receiver Operating Characteristic_) estimada do modelo. Essa métrica é comumente utilizada em problemas de classificação de crédito[^2]. A resposta gerada pela maior parte dos modelos não é a classe em si, mas sim uma probabilidade da classe. Normalmente, quando a probabilidade da classe "bom pagador" excede 50%, classifica-se como bom pagador. Caso contrário, como mau pagador. Esse limiar de 50% pode ser redefinido de acordo com a necessidade do problema. Uma forma de medir o quão robusto é um modelo consiste em calcular as taxas de verdadeiros positivos (bons pagadores classificados como bons pagadores) e falsos positivos (maus pagadores classificados como bons pagadores) para vários limiares entre 0 e 100%, desenhar uma curva entre os pontos e medir a área sob a curva. Essa área é a _AUROC_ e ela pode ser interpretada como o poder preditivo do modelo independente do limiar. Este é um exemplo de curva:
 
 <center>
 ![](./roc.png)
@@ -121,7 +117,7 @@ Uma solução para esse problema é maximizar a _AUROC_ (_Area under Receiver Op
 
 [^2]: https://www.kaggle.com/c/home-credit-default-risk#evaluation
 
-Para estimar a métrica em questão, o banco de dados foi dividido em três partes: treinamento (64% das observações), validação (16%) e teste (20%). Cada possível modelo relaciona os dados de uma maneira particular e pode ser adequado, por meio de sua configuração (parâmetros), para se adequar a diferentes problemas. Diferentes modelos com diversas configurações foram ajustados ao banco de treinamento e, em seguida, a _AUROC_ de cada um foi medida por meio da predição do banco de validação[^3]. A combinação de modelo e parâmetros com a maior área sob a curva na validação foi escolhida. Esse modelo foi, então, ajustado ao banco combinado de treinamento e validação. Por fim, a predição do banco de teste foi utilizada como um estimador da _AUROC_ do modelo. Esse processo é necessário porque, como as observações de teste não são utilizadas na escolha ou no ajuste do modelo, o banco de teste serve como uma simulação da categorização de futuros clientes. Naturalmente, o ajuste final será feito com o banco de dados inteiro.
+Para estimar a métrica em questão, o banco de dados foi dividido em três partes: treinamento (64% das observações), validação (16%) e teste (20%). Cada possível modelo relaciona os dados de uma maneira particular e pode ser adequado, por meio de sua configuração (parâmetros), a diferentes problemas. Modelos distintos com diversas configurações foram ajustados ao banco de treinamento e, em seguida, a _AUROC_ de cada um foi medida por meio da predição do banco de validação[^3]. A combinação de modelo e parâmetros com a maior área sob a curva na validação foi escolhida. Esse modelo foi, então, ajustado ao banco combinado de treinamento e validação. Por fim, a predição do banco de teste foi utilizada como um estimador da _AUROC_ do modelo. Esse processo é necessário porque, como as observações de teste não são utilizadas na escolha ou no ajuste do modelo, o banco de teste serve como uma simulação da categorização de futuros clientes. Naturalmente, o ajuste final será feito com o banco de dados inteiro.
 
 [^3]: De forma mais elaborada, esse processo aconteceu 4 vezes. Dos 80% que constituem treinamento + validação, foram criados 5 bancos de validação: um com os primeiros 16%, outro com os 16% seguintes, etc. Para cada banco de validação, os demais 64% serviram como treinamento. A _AUROC_ estimada é a média das áreas encontradas em cada validação. Esse processo é chamado de validação cruzada em _k partes_.
 
@@ -168,17 +164,17 @@ fancyRpartPlot(tree_model$finalModel, sub = "", type = 3)
 
 O _Random Forests_ cria novas amostras a partir do banco de treino, selecionando observações aleatoriamente. As amostras têm um número limitado de colunas, que também são determinadas aleatoriamente. Uma árvore é criada para cada amostra e aplicada na classificação do banco de validação e, em seguida, a classificação mais comum de cada observação é escolhida como a resposta definitiva do modelo. O número de colunas escolhidas por amostra é o parâmetro do _Random Forests_.
 
-```{r rf}
+```{r rf, eval = TRUE}
 set.seed(06061998)
 rf_model <- train(
-x = train_x,
-y = train_y,
-method = "rf",
-ntree = 1000,
-metric = "ROC",
-importance = TRUE,
-trControl = ctrl,
-tuneLength = 5
+  x = train_x,
+  y = train_y,
+  method = "rf",
+  ntree = 1000,
+  metric = "ROC",
+  importance = TRUE,
+  trControl = ctrl,
+  tuneLength = 5
 )
 ggplot(rf_model) + xlab("Parâmetro") + ylab("AUROC") + ggtitle("AUROC x Parâmetro")
 ```
@@ -208,6 +204,13 @@ confusion <- confusionMatrix(rf_predicted, test_y, positive = "Bom")
 kable(confusion$table) %>% kable_styling()
 ```
 
+A interpretação da tabela é a seguinte: 
+
+* 129 bons pagadores foram classificados como bons pagadores (TP: _true positive_);
+* 31 maus pagadores foram classificados como maus pagadores (TN: _true negative_);
+* 34 maus pagadores foram classificados como bons pagadores (FP: _false positive_);
+* 6 bons pagadores foram classificados como maus pagadores (FN: _false negative_).
+
 Algumas métricas obtidas por meio da tabela podem orientar a tomada de decisão:
 
 ```{r metrics, results = "markup"}
@@ -215,4 +218,14 @@ kable(confusion$overall) %>% kable_styling()
 kable(confusion$byClass) %>% kable_styling()
 ```
 
-Onde TP = bons pagadores classificados como bons pagadores, TN = maus pagadores classificados como maus pagadores, FP = maus pagadores classificados como bons pagadores, FN = bons pagadores classificados como maus pagadores. Accuracy = (TP+TN)/(TP+FP+FN+TN), Precision = TP/(TP+FP), Recall = TP/(TP+FN), F1 = (2 x Recall x Precision)/(Recall + Precision). Essas métricas, aliadas a conhecimento sobre domínio e gerenciamento de risco, devem auxiliar a tomada de decisão dos bancos na concessão dos empréstimos.
+Onde 
+
+* Accuracy = (TP+TN)/(TP+FP+FN+TN);
+* Precision = TP/(TP+FP);
+* Sensitivity = Recall = TP/(TP+FN);
+* Specificity = TN/(FP+TN);
+* F1 = (2 x Recall x Precision)/(Recall + Precision).
+
+Essas métricas[^4], aliadas a conhecimento sobre domínio e gerenciamento de risco, devem auxiliar a tomada de decisão do banco na concessão dos empréstimos.
+
+[^4]: https://en.wikipedia.org/wiki/Sensitivity_and_specificity#Confusion_matrix
